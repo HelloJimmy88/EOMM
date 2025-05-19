@@ -9,7 +9,7 @@
 # 【WWW'17】EOMM: An Engagement Optimized Matchmaking
 **This is a toy reproduction of the paper**  [*(WWW'17) EOMM: An Engagement Optimized Matchmaking*](http://web.cs.ucla.edu/~yzsun/papers/WWW17Chen_EOMM).
 
-We are research engineers working on game matchmaking optimization domain. The idea of EOMM paper is interesting, so we reproduced the framework and the matchmaking procedure, according to the description in the paper.
+We are research engineers working on game matchmaking optimization domain. The idea of EOMM paper is interesting, so we reproduced the framework and the matchmaking procedure, according to the description in the paper.  The implementation now includes a logistic churn model and a simplified TrueSkill based win probability estimation inspired by the original method.  Model coefficients remain placeholders because the paper does not provide the exact values.
 
 本项目是对EOMM论文的复现。
 

@@ -14,24 +14,46 @@ import math
 import uuid
 import networkx as nx
 from utils.loggingAgent import logger
+from churn_model import ChurnModel
+
+# ====================================
+# Simple logistic regression utilities
+# ====================================
+
+FEATURE_WEIGHTS = [-1.0, 0.003, -0.5, -0.3, -0.2]  # bias, mu_diff, outcome, win_prob, recent_wins
+
+def _norm_cdf(x):
+    """Standard normal cumulative distribution function."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+# constant used in TrueSkill probability calculation
+BETA = 25.0 / 6.0
+
+# churn model instance
+churn_model = ChurnModel(FEATURE_WEIGHTS)
 
 # ************************************
 # Player
 # ************************************
 class Player(object):
-    def __init__(self, player_id=None, **param):
-        self._player_id = str(uuid.uuid1()) if player_id is None else player_id
-        self._mmr = random.randint(1,100)
-        self._latest_win_seq = [random.choice([1,-1]) for i in range(2)]
+    def __init__(self, player_id=None, mu=None, sigma=None, **param):
+        self._player_id = str(uuid.uuid1()) if player_id is None else str(player_id)
+        # TrueSkill rating parameters
+        self._mu = mu if mu is not None else random.uniform(20, 30)
+        self._sigma = sigma if sigma is not None else 8.333
+        self._latest_win_seq = [random.choice([1, -1]) for _ in range(2)]
 
     @property
     def player_id(self):
         return self._player_id
 
     @property
-    def mmr(self):
-        # the MMR property.
-        return self._mmr
+    def mu(self):
+        return self._mu
+
+    @property
+    def sigma(self):
+        return self._sigma
 
     @property
     def latest_win_seq(self):
@@ -68,52 +90,19 @@ class PlayersGraph(nx.Graph):
 # A simplified(temporary) method to calculate the churn weight in the PlayersGraph
 # ************************************
 def predict_win(pi, pj):
-    '''
-    Description: predict win rate of player pi, against player pj. 
-        Here we adopt ELO algorthm for the ease of computation.
-    Param:
-        pi,pj: Player instance
-    Return:
-        Pi_win, Pi_draw, Pi_lose
-    '''
-    # assert isinstance(pi, Player)
-    # assert isinstance(pj, Player)
-    Pi_win = 1/(1+math.pow(10, (pj.mmr-pi.mmr)/400))
-    Pi_draw = 0
-    Pi_lose = 1-Pi_win-Pi_draw
-    return Pi_win, Pi_draw, Pi_lose
+    """Estimate win/draw/lose probabilities using a TrueSkill-style formula."""
+    delta_mu = pi.mu - pj.mu
+    denom = math.sqrt(pi.sigma ** 2 + pj.sigma ** 2 + 2 * (BETA ** 2))
+    win = _norm_cdf(delta_mu / denom)
+    lose = _norm_cdf(-delta_mu / denom)
+    draw = max(0.0, 1.0 - win - lose)
+    return win, draw, lose
 
-def predict_individual_churn(p, next_outcome):
-    '''
-    Description: To simplify the churn prediction of individual player, the churn probability
-        is set to be statistical churn_rate(*100%) according to the latest+predicted match outcomes.
-    Param: 
-		p: the player
-        next_outcome: predicted match outcome, 1 for win, -1 for lose, 0 for drawn
-    Return: 
-		churn_rate: churn rate(*100%)  of p with the given predicted outcome
-    '''
-    # assert isinstance(p, Player)
-    outcome_seq = p.latest_win_seq[-2:] + [next_outcome]
-    if outcome_seq == [1,1,1]:
-        churn_rate = 37
-    elif outcome_seq == [1,1,-1]:
-        churn_rate = 49
-    elif outcome_seq == [1,-1,1]:
-        churn_rate = 46
-    elif outcome_seq == [-1,1,1]:
-        churn_rate = 43
-    elif outcome_seq == [-1,1,-1]:
-        churn_rate = 37
-    elif outcome_seq == [-1,-1,1]:
-        churn_rate = 27
-    elif outcome_seq == [1,-1,-1]:
-        churn_rate = 56
-    elif outcome_seq == [-1,-1,-1]:
-        churn_rate = 61
-    else:
-        churn_rate = 50
-    return churn_rate
+def predict_individual_churn(p, opp, next_outcome, win_prob):
+    """Predict churn probability for ``p`` when matched with ``opp``."""
+    mu_diff = p.mu - opp.mu
+    recent_wins = sum(1 for r in p.latest_win_seq if r == 1)
+    return churn_model.predict(mu_diff, next_outcome, win_prob, recent_wins)
 
 def predict_pair_churn(pi, pj):
     '''
@@ -126,9 +115,15 @@ def predict_pair_churn(pi, pj):
     # assert isinstance(pi, Player)
     # assert isinstance(pj, Player)
     Pi_win, Pi_draw, Pi_lose = predict_win(pi, pj)
-    churn = Pi_win*(predict_individual_churn(pi, next_outcome=1)+predict_individual_churn(pj, next_outcome=-1)) \
-        + 0 \
-            +Pi_lose*(predict_individual_churn(pi, next_outcome=-1)+predict_individual_churn(pj, next_outcome=1))
+
+    churn = (
+        Pi_win * (predict_individual_churn(pi, pj, next_outcome=1, win_prob=Pi_win)
+                   + predict_individual_churn(pj, pi, next_outcome=-1, win_prob=Pi_win))
+        + Pi_draw * (predict_individual_churn(pi, pj, next_outcome=0, win_prob=Pi_draw)
+                     + predict_individual_churn(pj, pi, next_outcome=0, win_prob=Pi_draw))
+        + Pi_lose * (predict_individual_churn(pi, pj, next_outcome=-1, win_prob=Pi_lose)
+                     + predict_individual_churn(pj, pi, next_outcome=1, win_prob=Pi_lose))
+    )
     return churn
 # ************************************
 # Matchmakers
